@@ -21,7 +21,7 @@ savesync games
 ## 状态
 
 - ✅ 核心状态机（两阶段 plan/execute、全局版本令牌冲突检测）+ 本地目录后端 + CLI
-  已实现，88 项 unittest 全绿（每模块专属测试文件）
+  已实现，113 项 unittest 全绿（每模块专属测试文件）
   （`PYTHONPATH=src python3 -m unittest discover -s tests`）
-- ✅ zip 后端已实现（单包多游戏，提交时整包重写合并其余游戏，spool 缓冲不占内存）
-- ⏳ webdav 后端为契约桩，按 DESIGN.md §8 推进中
+- ✅ zip 后端已实现（单包多游戏；put 直接流式写入新包，提交时并入其余游戏条目后原子替换，无临时落盘缓冲）
+- ✅ webdav 后端已实现（urllib 裸实现 PROPFIND/MKCOL/PUT/DELETE，Basic/Digest；密码 配置明文 > 环境变量 > 首次 401 交互输入）
