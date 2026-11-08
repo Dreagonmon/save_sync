@@ -253,6 +253,20 @@ class TestContract(WebDAVCase):
             body = resp.read().decode()
         self.assertEqual(body.count("<D:response>"), 4)  # 含全部后代
 
+    def test_multilevel_subdirectory_base(self):
+        # 配置到服务器多级子目录：不存在则自顶向下自动建链
+        MiniDAV.DIRS = {"/webdav-root"}  # /dav 本身也不存在
+        b = WebDAVBackend(BackendConfig(
+            id="wd", type="webdav", url=self.base + "/savesync/prod"))
+        b.put("g1", "a/b.dat", io.BytesIO(b"x"), 1)
+        self.assertIn("/dav/savesync/prod/g1/a/b.dat", MiniDAV.FILES)
+        self.assertEqual(sorted(MiniDAV.DIRS),
+                         ["/dav", "/dav/savesync", "/dav/savesync/prod",
+                          "/dav/savesync/prod/g1", "/dav/savesync/prod/g1/a",
+                          "/webdav-root"])
+        self.assertEqual(b.list_files("g1")["a/b.dat"].size, 1)
+        self.assertIsNone(b.read_manifest("g1"))  # 子目录可达但无清单
+
     def test_connection_refused(self):
         b = WebDAVBackend(BackendConfig(
             id="wd", type="webdav", url="http://127.0.0.1:1/dav"))
