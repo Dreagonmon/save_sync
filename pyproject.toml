@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "save-sync"
+version = "0.1.0"
+description = "Game save backup/sync tool with incremental mirroring and version-token conflict detection"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Dreagonmon", email = "531486058@qq.com" }]
+dependencies = []
+
+[project.scripts]
+savesync = "savesync.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/savesync"]

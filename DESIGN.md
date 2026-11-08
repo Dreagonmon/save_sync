@@ -1,0 +1,274 @@
+# save_sync 设计文档
+
+游戏存档备份同步工具。Python 实现，运行于 Linux / macOS / Windows / Android(Termux)。
+备份后端只保留**最新镜像**（无版本历史），以清单中的**自增版本号**做基于同步状态的冲突检测，
+所有冲突场景人工确认。
+
+## 1. 总体目录布局
+
+```
+<软件根目录>/
+├── config/
+│   ├── g-<id>.toml          # 一个游戏一个配置文件，文件名 stem 即游戏 id
+│   └── s-<id>.toml          # 一个存储后端一个配置文件，stem 即后端 id
+├── data/
+│   └── <id>.json            # 本地状态清单（上次同步点），每游戏一份
+└── <后端根>/                 # dir: 本地目录 / zip: 包内 / webdav: 远端前缀
+    ├── <id>/                # 游戏数据目录：最新存档树的原样镜像（本工具独占）
+    │   ├── SaveGame001.sav
+    │   └── mods/config/options.txt
+    └── <id>.json            # 远端清单（在数据目录之外）
+```
+
+- 游戏 id / 后端 id 一律取配置文件名 stem，保证是安全的路径/URL/zip 成员名；
+  中文显示名放在 toml 的 `name` 字段，不进入任何路径。
+- 后端数据目录内**只存放本工具写入的文件**，删除操作直接以目录内容做差集，无需对照清单。
+
+## 2. 配置 schema
+
+### 2.1 后端 `config/s-<id>.toml`
+
+```toml
+type = "webdav"              # "dir" | "zip" | "webdav"
+
+# type = "dir"
+path = "~/savesync-data"
+
+# type = "zip"
+path = "~/savesync-data/backups.zip"
+
+# type = "webdav"
+url = "https://dav.example.com/dav/savesync"
+username = "me"
+password_env = "SAVESYNC_NAS_PW"   # 密码从环境变量读取，不落盘
+```
+
+### 2.2 游戏 `config/g-<id>.toml`
+
+```toml
+name = "星露谷物语"
+backend = "nas"                   # 引用 s-nas.toml
+ignore = ["*.bak", "logs/**"]     # 见 §5
+
+[paths.linux]                     # 同一平台支持多条路径条目：路径原文 = 备注
+"/home/me/.config/.../Saves" = "Steam版"
+"/mnt/x/.../Saves" = "外挂盘版"
+"/sdcard/Android/.../files" = "Termux/Android 用"
+[paths.macos]
+"~/Library/Application Support/..." = "备注"
+[paths.windows]
+"%APPDATA%/.../Saves" = "备注"
+```
+
+- 平台键只有 `linux` / `macos` / `windows` 三种，**没有独立的 android 键**：
+  Android（Termux）一律按 `linux` 对待，安卓存档路径直接配在 `[paths.linux]` 里。
+- 每个平台表可配**多条**条目；备份/恢复时自动选择其中「存在」的唯一条目，
+  不唯一则询问或要求 `--path N`，0 条的行为见 §7。
+
+路径字符串支持 `~`、`$VAR`、`%VAR%` 展开（自实现一层，跨平台统一）。
+
+## 3. 清单 schema
+
+### 3.1 远端清单 `<后端根>/<id>.json`
+
+```json
+{
+  "game": "stardew",
+  "version": 5,
+  "upload_time": "2026-11-08T13:46:33+08:00",
+  "time_source": "ntp",
+  "source_platform": "linux",
+  "files": [
+    {"path": "SaveGame001.sav", "hash": "9f2a…", "size": 104857,
+     "mtime": "2026-11-08T12:00:03+08:00"}
+  ]
+}
+```
+
+- `version`：自增整数，新版本 = `max(本地版本, 远端版本) + 1`，单调不回退。
+- `upload_time`：备份时从阿里云 NTP（`ntp.aliyun.com`）获取；超时 2s，失败重试 1 次，
+  再失败回退本地时间。仅用于展示与排查（`time_source: "ntp" | "local"`），
+  **冲突检测不依赖任何时钟**。
+- `path` 一律为相对存档根的正斜杠路径。`hash` 为 SHA-256。
+
+### 3.2 本地状态清单 `data/<id>.json`
+
+```json
+{
+  "game": "stardew",
+  "version": 5,
+  "chosen_path": 1,
+  "files": {"SaveGame001.sav": "9f2a…"},
+  "updated": "2026-11-08T13:46:33+08:00"
+}
+```
+
+记录**上次同步点**：同步完成时的版本号 + 当时本地文件 hash 表 + 选定的路径编号。
+它是冲突状态机的唯一本地依据；恢复时保留在远端不存在的本地多余文件**不写入**此表，
+从而在下次备份时被自然识别为新增文件上传。
+
+## 4. 冲突状态机（以游戏为单位）
+
+记：L = 本地状态清单版本（不存在视为 0），R = 远端清单版本（不存在视为无）。
+
+### 4.1 备份 backup
+
+| 情形 | 动作 |
+|---|---|
+| 远端清单不存在 | 全量上传，双方版本 → L+1 |
+| R == L，本地 hash 与状态清单一致 | 无变化，跳过 |
+| R == L，本地有变化 | 正常增量：上传 hash 变化/新增文件，删除远端多余文件，双方版本 → L+1 |
+| R > L | 他处上传过 → **询问是否覆盖远端**。是 → 以本地为准做差集（含删除），双方版本 → R+1；否 → 中止，提示可先 restore |
+| R < L | 远端被带外回退/替换 → **询问是否仍以本地覆盖**。是 → 同上，双方版本 → L+1；否 → 中止 |
+
+### 4.2 恢复 restore
+
+| 情形 | 动作 |
+|---|---|
+| 远端清单不存在 | 报错：无备份可恢复 |
+| R > L | 远端为准。先查本地 hash 是否偏离状态清单，若本地有未备份修改 → **询问是否继续（或先 backup）**；恢复后本地版本 → R |
+| R == L | 对比本地当前 hash vs 远端清单：全同 → 已同步，跳过；有差异 → 本地有未备份修改 → **询问是否覆盖本地** |
+| R < L | 远端被覆盖过 → **询问是否覆盖本地**。是 → 恢复，本地版本 → R；否 → 中止 |
+
+### 4.3 写入规则
+
+- **备份**：覆盖所有 hash 变化的文件；删除远端游戏目录中本地扫描（应用 ignore 后）
+  不存在的路径。删除以远端目录实际内容为准做差集，游戏目录视为本工具独占。
+- **恢复**：只覆盖 hash 与本地不同的文件；**本地多出的文件保留不删**。
+- **提交点**：备份先传/删数据文件、最后写远端清单；恢复先写本地文件、最后写
+  `data/<id>.json`。中途崩溃后清单未动，下次运行按 hash 差集自动补齐（自愈）。
+- **并发校验**：备份写完远端清单后重读，version 不等于预期值 → 视为并发写入者，
+  报冲突退出。
+
+### 4.4 执行模型：plan → 确认 → execute（两阶段）
+
+核心逻辑不做任何交互（不 print、不读 stdin、无全局可变状态），
+一切人工确认以**决策数据**返回给调用方，核心因此无状态、可恢复，
+CLI 与未来 WebUI 都只是薄适配层：
+
+1. `plan_backup / plan_restore` 返回 `Plan`：差集（upload / delete /
+   overwrite_local / keep_local）、版本迁移（before → new）、以及
+   `decisions: list[Decision]`。每个 `Decision` = id、问题、选项列表、
+   默认项、非交互提示（建议参数）。**存档路径需要选择时，路径本身也是一个
+   Decision（id="path"）**；0 匹配隐式跳过时 `Plan.skipped=True` 且无决策。
+2. 调用方收集答案（`answers: Decision.id -> 选项下标`）：CLI 交互模式逐条
+   询问；非交互模式存在未答决策 → 抛 `NeedsInputError`（退出码 3）；
+   WebUI 渲染表单后随请求回传。
+3. 含 path 决策时，作答后**重新 plan**（重扫成本可接受），直至 decisions
+   为空，再 `execute_backup / execute_restore(plan, answers)`。
+4. execute 返回 `SyncReport`（上传/删除/覆盖计数、前后版本、跳过原因），
+   由调用方渲染；长任务可选 `progress` 回调供未来 WebUI 显示进度。
+5. 用户选择「中止」不是异常：execute 返回 `ok=False, reason="aborted"` 的报告。
+
+## 5. 忽略规则
+
+`ignore` 模式以存档根为 `/` 匹配相对路径（统一转正斜杠），用 `fnmatch` 实现；
+`*` 可跨越 `/`，故 `logs/*` 即匹配 logs 子树。匹配命中目录前缀时整树剪枝不再遍历。
+后加的 ignore 规则会使远端对应文件在下次备份的差集删除中被移除（预期行为）。
+
+## 6. 扫描与哈希
+
+- 两级判断降低开销：`(size, mtime)` 与状态清单一致 → 直接沿用旧 hash；否则重算 SHA-256。
+- 符号链接默认跳过并记录；空目录随树保留（dir/webdav）。
+- 单文件超过阈值（默认 512MB，可配）打警告继续。
+
+## 7. 路径解析（存档来源）
+
+取当前平台条目列表 → 过滤「存在」的路径（无权限/不存在一律视为不存在，Android 不特殊处理）：
+
+- **恰好 1 条**：自动选中。
+- **多条**：交互模式列出编号（默认高亮状态清单中的 `chosen_path`）供选择；
+  非交互必须显式 `--path N`，否则报错退出码 3。
+- **0 条**：
+  - 备份：命令显式点名该游戏 → 报错；`all` 隐式包含 → 跳过并打印
+    `skipped (no path found)`，不算失败。
+  - 恢复：列出该平台**全部**配置路径（含不存在的）供选择，选中不存在的路径则
+    创建目录后恢复；非交互必须 `--path N`。
+
+平台判定：`sys.platform`；Android（Termux，`ANDROID_ROOT` / 相关环境变量）
+归入 `linux`，配置与选择逻辑完全一致，无独立分支。
+
+## 8. 后端实现
+
+统一协议（`backends/base.py`）：
+
+```python
+class Backend(Protocol):
+    def read_manifest(self, game_id) -> RemoteManifest | None: ...
+    def write_manifest(self, manifest) -> None: ...      # 提交点
+    def list_files(self, game_id) -> dict[str, FileMeta]: ...
+    def get(self, game_id, relpath) -> Iterator[bytes]: ...
+    def put(self, game_id, relpath, stream, size) -> None: ...
+    def delete(self, game_id, relpath) -> None: ...
+```
+
+### 8.1 dir
+`os.walk` 列举；`shutil.copyfileobj` 写入（tmp + `os.replace` 原子落盘）；`os.remove` 删除。
+
+### 8.2 zip
+单包多游戏，布局与后端根一致（`<id>/…` + `<id>.json`）。zip 不可原地改，
+后端在内存/临时区**缓冲全部操作**，`write_manifest` 时整包重写：
+指定游戏取本次新备份，**其余游戏从旧包原样搬运条目**（合并语义），写 tmp 后
+`os.replace`。文件名 UTF-8（zipfile 默认），压缩 `ZIP_DEFLATED`。不做追加式增量。
+
+### 8.3 webdav
+`urllib.request` 裸实现（零第三方依赖）：`PROPFIND Depth:1` 递归列举、`MKCOL` 建目录、
+`PUT` 上传、`DELETE` 删除；路径分段 URL 编码；Basic/Digest 认证。
+不依赖服务器 `Last-Modified`/`ETag`/`COPY` 语义。
+
+## 9. CLI
+
+```
+savesync backup [game ...] [--path N] [--dry-run]     # 缺省 = all
+savesync restore [game ...] [--path N]
+savesync status [game ...]                             # 各游戏 L/R 版本与差异摘要
+savesync games                                         # 列出配置的游戏与后端
+```
+
+- **CLI 是薄适配层**：`plan → resolve_decisions（交互询问）→ 重 plan → execute
+  → 渲染 SyncReport`，本模块之外（core/backends）禁止 print 与 input。
+  未来 WebUI 以同样方式适配（plan 渲染表单、answers 回传、execute 后台跑）。
+- **非交互约定**：stdin 非 tty 时，`Plan.decisions` 非空且无法自动作答 →
+  打印问题与建议参数（`--path N`、先 backup 等）→ 退出码 3。
+  方便 cron/Tasker 编排。
+- 退出码：`0` 成功（含跳过）；`1` 错误；`2` 用法错误；`3` 需要人工输入。
+- `--dry-run` 只打印将执行的上传/删除/覆盖清单。
+
+## 10. 工程形态
+
+- Python ≥ 3.11（`tomllib` 只读配置）。核心**零第三方依赖**：
+  `zipfile / hashlib / pathlib / fnmatch / urllib / socket(SNTP) / getpass`。
+- `pyproject.toml` + entry point `savesync = savesync.cli:main`，pipx 安装；
+  Android 上 pip 安装（Termux）。
+- 包结构（**core 层约定**：`config/paths/scanner/manifest/sync/ntp/backends` 为
+  纯逻辑层，禁止 print/input/全局可变状态，结果一律 dataclass 或类型化异常；
+  交互与渲染只发生在 `cli.py`，未来 `webui` 平行接入）：
+
+```
+src/savesync/
+├── cli.py          # 薄适配层：参数解析、决策询问、报告渲染、退出码
+├── errors.py       # 异常体系：NeedsInputError / ConfigError / BackendError / …
+├── config.py       # g-*/s-* 加载与校验
+├── paths.py        # 平台判定、路径展开与解析选择
+├── scanner.py      # 存档树扫描、ignore、两级 hash
+├── manifest.py     # 远端/本地清单读写（原子写）
+├── sync.py         # §4 状态机：plan_* / execute_* 两阶段，含 Plan/Decision/SyncReport
+├── ntp.py          # SNTP 客户端（阿里云，2 次失败回退本地）
+├── prompt.py       # CLI 侧 Decision 作答（交互/非交互），仅被 cli 使用
+└── backends/
+    ├── base.py     # Backend 协议
+    ├── dirfs.py
+    ├── zipfs.py
+    └── webdav.py
+```
+
+- 测试：dir 后端为参照实现，zip/webdav 后端对着同一套协议契约测试
+  （webdav 用标准库 http.server 起假服务器）。
+
+## 11. 已知取舍
+
+- 无版本历史：后端只有最新版，误覆盖靠冲突询问防止，不提供历史回滚。
+- 冲突检测基于「版本号 + 同步点 hash 指纹」，不信任跨设备时钟；NTP 仅供展示。
+- 恢复不删除本地多余文件（保守）；备份删除远端多余文件（镜像语义）。
+- Android（按 linux 平台对待）无 root 时 `/data/data` 下存档视为不存在，
+  靠配置 `/sdcard` 可见路径解决。
