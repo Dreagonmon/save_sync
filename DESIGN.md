@@ -12,7 +12,7 @@
 │   ├── g-<id>.toml          # 一个游戏一个配置文件，文件名 stem 即游戏 id
 │   └── s-<id>.toml          # 一个存储后端一个配置文件，stem 即后端 id
 ├── data/
-│   └── <id>.json            # 本地状态清单（上次同步点），每游戏一份
+│   └── <id>.json            # 本地状态清单，每游戏一份：唯一同步点（全局版本线）
 └── <后端根>/                 # dir: 本地目录 / zip: 包内 / webdav: 远端前缀
     ├── <id>/                # 游戏数据目录：最新存档树的原样镜像（本工具独占）
     │   ├── SaveGame001.sav
@@ -20,8 +20,8 @@
     └── <id>.json            # 远端清单（在数据目录之外）
 ```
 
-- 游戏 id / 后端 id 一律取配置文件名 stem，保证是安全的路径/URL/zip 成员名；
-  中文显示名放在 toml 的 `name` 字段，不进入任何路径。
+- 游戏 id / 后端 id 取配置文件名去掉 `g-` / `s-` 前缀（`g-stardew.toml` → `stardew`），
+  保证是安全的路径/URL/zip 成员名；中文显示名放在 toml 的 `name` 字段，不进入任何路径。
 - 后端数据目录内**只存放本工具写入的文件**，删除操作直接以目录内容做差集，无需对照清单。
 
 ## 2. 配置 schema
@@ -47,7 +47,6 @@ password_env = "SAVESYNC_NAS_PW"   # 密码从环境变量读取，不落盘
 
 ```toml
 name = "星露谷物语"
-backend = "nas"                   # 引用 s-nas.toml
 ignore = ["*.bak", "logs/**"]     # 见 §5
 
 [paths.linux]                     # 同一平台支持多条路径条目：路径原文 = 备注
@@ -64,6 +63,11 @@ ignore = ["*.bak", "logs/**"]     # 见 §5
   Android（Termux）一律按 `linux` 对待，安卓存档路径直接配在 `[paths.linux]` 里。
 - 每个平台表可配**多条**条目；备份/恢复时自动选择其中「存在」的唯一条目，
   不唯一则询问或要求 `--path N`，0 条的行为见 §7。
+- **游戏不绑定后端**：任何游戏可备份到任意后端。备份/恢复时用 `--backend <id>`
+  指定；缺省时仅一个后端自动选中，多个则交互选择（默认项 = 该游戏上次使用的后端），
+  非交互模式无默认 → 退出码 3 并提示 `--backend`。
+- 同一存储的不同访问路径（如 WebDAV 走公网 / 局域网 / 本地 frpc 转发）在配置里是
+  不同后端条目，但**共享同一条本地版本线**（见 §3.2），切换访问路径不产生伪冲突。
 
 路径字符串支持 `~`、`$VAR`、`%VAR%` 展开（自实现一层，跨平台统一）。
 
@@ -86,6 +90,11 @@ ignore = ["*.bak", "logs/**"]     # 见 §5
 ```
 
 - `version`：自增整数，新版本 = `max(本地版本, 远端版本) + 1`，单调不回退。
+- `mtime` 为**尽力而为的展示/恢复元数据，永不参与差集与冲突判定**（判定只认
+  hash）。备份端写入本地文件的 mtime；恢复端 `os.utime` 尽力设置，失败或字段
+  缺失（`""`，如无 mtime 的 WebDAV/zip 环境）则跳过。恢复后的状态条目直接记
+  清单 mtime（与远端清单一致）：utime 失败时下次备份重算一次 hash 并以实际
+  stat 自愈；无 mtime 记 0.0，两级过滤不命中、每次备份重算，仅慢不影响正确。
 - `upload_time`：备份时从阿里云 NTP（`ntp.aliyun.com`）获取；超时 2s，失败重试 1 次，
   再失败回退本地时间。仅用于展示与排查（`time_source: "ntp" | "local"`），
   **冲突检测不依赖任何时钟**。
@@ -97,19 +106,28 @@ ignore = ["*.bak", "logs/**"]     # 见 §5
 {
   "game": "stardew",
   "version": 5,
+  "files": {
+    "SaveGame001.sav": {"hash": "9f2a…", "size": 104857, "mtime": 1762000000.0}
+  },
   "chosen_path": 1,
-  "files": {"SaveGame001.sav": "9f2a…"},
-  "updated": "2026-11-08T13:46:33+08:00"
+  "last_backend": "nas"
 }
 ```
 
-记录**上次同步点**：同步完成时的版本号 + 当时本地文件 hash 表 + 选定的路径编号。
-它是冲突状态机的唯一本地依据；恢复时保留在远端不存在的本地多余文件**不写入**此表，
-从而在下次备份时被自然识别为新增文件上传。
+- **唯一同步点，不保留历史**：远端只存最新镜像，旧版本内容无处可寻，历史清单
+  无回滚价值（只剩 hash 审计），故刻意去除，无 prune 命令。
+- **版本线按游戏全局唯一，所有后端共享**：`version` 就是状态机里的 L。远端各
+  镜像都对照这条全局线判前后——同一存储换访问路径（公网/局域网/frpc）不产生
+  伪冲突；备份到落后镜像时按「远端较旧」正常确认。
+- `files` 是两级 hash 过滤与恢复脏检测的依据，条目带 `size`/`mtime`
+  （float 时间戳，始终来自本机实际 stat），二者与现状一致则沿用旧 hash 不重算。
+- 恢复时保留在远端不存在的本地多余文件**不写入** `files`，从而在下次备份时被
+  自然识别为新增文件上传。
 
 ## 4. 冲突状态机（以游戏为单位）
 
-记：L = 本地状态清单版本（不存在视为 0），R = 远端清单版本（不存在视为无）。
+记：L = 本地状态清单版本（游戏全局、所有后端共享；不存在视为 0），
+R = 远端清单版本（不存在视为无）。
 
 ### 4.1 备份 backup
 
@@ -169,8 +187,10 @@ CLI 与未来 WebUI 都只是薄适配层：
 ## 6. 扫描与哈希
 
 - 两级判断降低开销：`(size, mtime)` 与状态清单一致 → 直接沿用旧 hash；否则重算 SHA-256。
-- 符号链接默认跳过并记录；空目录随树保留（dir/webdav）。
-- 单文件超过阈值（默认 512MB，可配）打警告继续。
+  备份路径记本机实际 stat；恢复路径记清单 mtime（utime 失败时下次备份以实际
+  stat 自愈），与远端环境是否提供 mtime 无关。
+- 符号链接（文件与目录）跳过；空目录不保留（清单只记录文件）。
+- 单文件超过阈值（默认 512MB，可配）经 warn 回调警告（core 不 print）。
 
 ## 7. 路径解析（存档来源）
 
@@ -202,6 +222,11 @@ class Backend(Protocol):
     def delete(self, game_id, relpath) -> None: ...
 ```
 
+- **mtime 唯一来源是清单**：远端清单里的 `mtime` 记录的是最后一次备份时**备份机**
+  提供的本地文件 mtime；恢复直接取清单值设置，绝不查询远端文件的原生修改时间
+  （服务器 FS stat / zip 条目时间 / WebDAV `getlastmod`，往往与清单不一致）。
+  `list_files` 返回的 `FileMeta` 仅供 status/调试展示，同步状态机不得依赖。
+
 ### 8.1 dir
 `os.walk` 列举；`shutil.copyfileobj` 写入（tmp + `os.replace` 原子落盘）；`os.remove` 删除。
 
@@ -219,11 +244,14 @@ class Backend(Protocol):
 ## 9. CLI
 
 ```
-savesync backup [game ...] [--path N] [--dry-run]     # 缺省 = all
-savesync restore [game ...] [--path N]
-savesync status [game ...]                             # 各游戏 L/R 版本与差异摘要
-savesync games                                         # 列出配置的游戏与后端
+savesync backup [game ...] [-B/--backend ID] [--path N] [--dry-run]  # 缺省 = all
+savesync restore [game ...] [-B/--backend ID] [--path N]
+savesync status [game ...]          # 各游戏 × 各后端的 L/R 版本与路径状态
+savesync games                      # 列出配置的后端与游戏
 ```
+
+- 后端选择：`--backend` 指定 > 唯一后端自动选 > 交互选择（默认 = 上次使用的后端）；
+  非交互且无默认 → 退出码 3，提示 `--backend <id>` 及可选值。
 
 - **CLI 是薄适配层**：`plan → resolve_decisions（交互询问）→ 重 plan → execute
   → 渲染 SyncReport`，本模块之外（core/backends）禁止 print 与 input。
