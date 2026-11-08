@@ -5,6 +5,7 @@ core 不交互；本模块把 Plan.decisions 变成终端问答或 NeedsInputErr
 """
 from __future__ import annotations
 
+import getpass
 import sys
 
 from .errors import NeedsInputError
@@ -56,3 +57,22 @@ def resolve_decisions(plan: Plan, interactive: bool) -> Answers:
     for d in pending:
         answers[d.id] = ask_decision(d, interactive)
     return answers
+
+
+def ask_password(backend_id: str, url: str, interactive: bool) -> str:
+    """WebDAV 密码兜底：配置留空且远端 401 时由后端回调。
+
+    非交互 → NeedsInputError（rc 3，hint 说明怎么配）；交互 → getpass 隐藏输入。
+    """
+    if not interactive:
+        raise NeedsInputError([Decision(
+            id="password",
+            question=f"后端 {backend_id} 需要密码（{url}）",
+            options=[], default=None,
+            hint='配置 password = "…" 或 password_env = "VAR"（环境变量）',
+        )])
+    while True:
+        pw = getpass.getpass(f"{backend_id} 密码 ({url}): ")
+        if pw:
+            return pw
+        print("密码不能为空")

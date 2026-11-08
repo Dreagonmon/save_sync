@@ -24,14 +24,16 @@ class TestBackends(ConfigCase):
         self.w("s-local.toml", 'type = "dir"\npath = "/srv/bk"')
         self.w("s-pkg.toml", 'type = "zip"\npath = "/srv/bk.zip"')
         self.w("s-nas.toml", 'type = "webdav"\nurl = "https://nas/dav"\n'
-                             'username = "me"\npassword_env = "WD_PW"')
+                             'username = "me"\npassword = "pw"\n'
+                             'password_env = "WD_PW"')
         bs = load_backends(self.root)
         self.assertEqual(sorted(bs), ["local", "nas", "pkg"])  # s- 前缀剥离
         self.assertEqual((bs["local"].type, str(bs["local"].path)),
                          ("dir", "/srv/bk"))
         self.assertEqual((bs["nas"].url, bs["nas"].username,
-                          bs["nas"].password_env),
-                         ("https://nas/dav", "me", "WD_PW"))
+                          bs["nas"].password, bs["nas"].password_env),
+                         ("https://nas/dav", "me", "pw", "WD_PW"))
+        self.assertIsNone(bs["local"].password)  # 可缺省
 
     def test_unknown_type(self):
         self.w("s-x.toml", 'type = "ftp"\npath = "/x"')

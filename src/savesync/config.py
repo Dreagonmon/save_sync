@@ -22,7 +22,8 @@ class BackendConfig:
     path: Path | None = None          # dir / zip
     url: str | None = None            # webdav
     username: str | None = None
-    password_env: str | None = None
+    password: str | None = None       # 明文（建议 chmod 600）
+    password_env: str | None = None   # 环境变量名，不落盘
 
 
 @dataclass
@@ -69,6 +70,7 @@ def load_backends(root: Path) -> dict[str, BackendConfig]:
                 raise ConfigError(f"{p.name}: type=webdav 需要 url")
             cfg.url = str(d["url"])
             cfg.username = d.get("username")
+            cfg.password = d.get("password")
             cfg.password_env = d.get("password_env")
         out[bid] = cfg
     return out

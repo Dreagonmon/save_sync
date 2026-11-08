@@ -25,7 +25,8 @@ from .errors import BackendError, ConfigError, NeedsInputError, SaveSyncError
 from .manifest import LocalState, load_local_state, save_local_state
 from .paths import (current_platform, exists_quietly, find_candidate,
                     resolve_candidates)
-from .prompt import ask_decision, is_interactive, resolve_decisions
+from .prompt import (ask_decision, ask_password, is_interactive,
+                     resolve_decisions)
 from .sync import (DECISION_PATH, Decision, SyncReport, execute_backup,
                    execute_restore, plan_backup, plan_restore)
 
@@ -47,6 +48,11 @@ def _select_games(args, games: dict) -> tuple[list[str], bool]:
             raise ConfigError(f"未知游戏: {', '.join(unknown)}（见 savesync games）")
         return list(dict.fromkeys(args.games)), True
     return sorted(games), False
+
+
+def _password_provider(cfg: BackendConfig, interactive: bool):
+    """webdav 密码兜底回调：401 时触发（匿名服务器不打扰）。"""
+    return lambda: ask_password(cfg.id, cfg.url or "", interactive)
 
 
 def _pick_backend(args, backends: dict[str, BackendConfig],
@@ -89,7 +95,8 @@ def _run(cmd: str, args, root: Path, interactive: bool) -> int:
         game = games[gid]
         local = load_local_state(data_dir, gid)
         backend_id = _pick_backend(args, backends, local, interactive)
-        backend = create_backend(backends[backend_id])
+        bcfg = backends[backend_id]
+        backend = create_backend(bcfg, _password_provider(bcfg, interactive))
         state = local          # 版本线按游戏全局唯一，所有后端共享
         chosen = local.chosen_path if local else None
         save_root = None
@@ -168,7 +175,10 @@ def _status(args, root: Path) -> int:
         print(f"[{gid}] {game.name}  本地版本线 v{L}")
         for bid in sorted(backends):
             try:
-                R = create_backend(backends[bid]).read_manifest(gid)
+                bcfg = backends[bid]
+                R = create_backend(
+                    bcfg, _password_provider(bcfg, is_interactive())
+                ).read_manifest(gid)
             except BackendError as e:
                 print(f"    后端 {bid}: 本地 v{L} / 远端 读取失败: {e}")
                 continue

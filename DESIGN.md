@@ -40,8 +40,13 @@ path = "~/savesync-data/backups.zip"
 # type = "webdav"
 url = "https://dav.example.com/dav/savesync"
 username = "me"
-password_env = "SAVESYNC_NAS_PW"   # 密码从环境变量读取，不落盘
+password = "hunter2"               # 可选：明文（建议 chmod 600 config/）
+password_env = "SAVESYNC_NAS_PW"   # 可选：从环境变量读取，不落盘
 ```
+
+WebDAV 密码解析链：`password`（明文）> `password_env`（环境变量）> **首次 401 时
+交互式输入**（getpass 隐藏输入，本次会话复用；匿名服务器不 401 则全程不需要）>
+非交互模式抛 `NeedsInputError`（rc 3，提示如何配置）。
 
 ### 2.2 游戏 `config/g-<id>.toml`
 
@@ -244,6 +249,8 @@ class Backend(Protocol):
 `urllib.request` 裸实现（零第三方依赖）：`PROPFIND Depth:1` 递归列举、`MKCOL` 建目录、
 `PUT` 上传、`DELETE` 删除；路径分段 URL 编码；Basic/Digest 认证。
 不依赖服务器 `Last-Modified`/`ETag`/`COPY` 语义。
+密码按 §2.1 解析链取；`password_provider` 回调在**首次收到 401** 时触发一次
+（交互 getpass，结果缓存复用），匿名可达的服务器全程不询问。
 
 ## 9. CLI
 

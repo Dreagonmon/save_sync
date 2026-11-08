@@ -85,5 +85,23 @@ class TestResolveDecisions(unittest.TestCase):
             self.assertEqual(prompt.resolve_decisions(plan, False), {"x": 1})
 
 
+class TestAskPassword(unittest.TestCase):
+    def test_non_interactive_raises_with_hint(self):
+        with self.assertRaises(NeedsInputError) as cm:
+            prompt.ask_password("nas", "https://x/dav", False)
+        d = cm.exception.decisions[0]
+        self.assertEqual(d.id, "password")
+        self.assertIn("password_env", d.hint)
+
+    def test_interactive_getpass_retries_empty(self):
+        out = io.StringIO()
+        with mock.patch("getpass.getpass", side_effect=["", "s3cret"]) as gp, \
+                mock.patch("sys.stdout", out):
+            self.assertEqual(
+                prompt.ask_password("nas", "https://x/dav", True), "s3cret")
+        self.assertEqual(gp.call_count, 2)
+        self.assertIn("不能为空", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
