@@ -221,6 +221,19 @@ def _games(root: Path) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="savesync", description="游戏存档备份同步工具（后端仅保留最新镜像）")
+    parser.epilog = """\
+示例:
+  savesync games                     列出配置的游戏与后端
+  savesync backup                    备份全部游戏
+  savesync backup delta-v -B nas     备份单个游戏到指定后端
+  savesync restore -B nas --path 1   从指定后端恢复，并指定存档路径编号
+  savesync status                    逐后端对比本地/远端版本线
+
+后端选择（backup/restore，详见 savesync <命令> -h）:
+  -B/--backend ID 显式指定 > 仅一个后端时自动选中 > 交互选择
+  （默认项 = 该游戏上次使用的后端；非交互模式报退出码 3 并给出建议参数）
+"""
+    parser.formatter_class = argparse.RawDescriptionHelpFormatter
     parser.add_argument("--root", metavar="DIR",
                         help="软件根目录（含 config/ 与 data/），"
                              "默认 $SAVESYNC_ROOT 或当前目录")
