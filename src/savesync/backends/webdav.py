@@ -125,27 +125,55 @@ class WebDAVBackend:
         try:
             self._request("MKCOL", url, data=b"")
         except BackendError as e:
-            # RFC 4918 §9.3.1：405 = URL 已映射（即已存在，唯一合规的"存在"信号）；
-            # 409 本义是祖先集合缺失（我们自顶向下建，正常不会触发），
-            # 容忍个别非合规服务器用它表示"已存在"——真缺祖先会在后续 PUT 409 暴露；
-            # 301 = 尾斜杠规范化重定向（nginx 实测行为），非 RFC 但需容忍
-            if getattr(e, "http_code", None) not in (405, 409, 301):
+            # RFC 4918 §9.3.1：405 = URL 已映射（唯一合规的"存在"信号）；
+            # 409 本义是祖先缺失（自顶向下建 + 存在性探测后正常不触发）。
+            # 网盘桥接服务器（CloudDrive/Alist 等实测）对已存在或只读的
+            # 挂载点回 400/501 而非 405，一并容忍；真缺目录会在后续
+            # PUT 409 / 写清单重试路径暴露。301 = 尾斜杠重定向（nginx 实测）。
+            if getattr(e, "http_code", None) not in (301, 400, 405, 409, 501):
                 raise
 
+    def _exists(self, url: str) -> bool:
+        """PROPFIND Depth:0 探测集合存在性（§9.1 允许对任意资源 PROPFIND）。
+
+        非 404 的探测错误宽容当作存在（只读挂载点可能拒 PROPFIND）；
+        若实际不存在，后续 PUT 409 会暴露真实问题。
+        """
+        try:
+            resp = self._request(
+                "PROPFIND", url, data=_PROPFIND_BODY,
+                headers={"Depth": "0",
+                         "Content-Type": "application/xml",
+                         "Content-Length": str(len(_PROPFIND_BODY))},
+                ok_404=True)
+        except BackendError:
+            return True
+        if resp is None:
+            return False
+        resp.close()
+        return True
+
     def _ensure_collection(self, url: str) -> None:
-        """确保 url 的全部祖先集合存在（含 base 自身，全新服务器上可能缺失）。"""
+        """确保 url 的全部祖先集合存在（含 base 自身，全新服务器上可能缺失）。
+
+        MKCOL 只发给 PROPFIND 确认不存在（404）的段——RFC 4918 §9.3 本就
+        规定 MKCOL 仅可对未映射 URL 执行；网盘桥接对已存在路径的 MKCOL
+        常回 400，先探测可完全避开。结果按会话缓存，每段至多一次往返。
+        """
         parsed = urllib.parse.urlparse(url)
         path = parsed.path.rstrip("/")
-        ancestors: list[str] = []
-        while path and path != "/":
-            ancestors.append(path)
-            path = path.rsplit("/", 1)[0]
         origin = url[: len(url) - len(parsed.path)]
-        for a in reversed(ancestors):
-            if a in self._known_dirs:
+        acc = ""
+        for seg in path.split("/"):
+            if not seg:
                 continue
-            self._mkcol(origin + a + "/")
-            self._known_dirs.add(a)
+            acc += "/" + seg  # path 来自 URL，保持编码形态
+            if acc in self._known_dirs:
+                continue
+            target = origin + acc + "/"
+            if not self._exists(target):
+                self._mkcol(target)
+            self._known_dirs.add(acc)
 
     # ---- Backend 协议 ----
 

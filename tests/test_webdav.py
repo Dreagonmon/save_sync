@@ -28,6 +28,8 @@ class MiniDAV(BaseHTTPRequestHandler):
     REQUIRE: tuple[str, str] | None = None
     LAST_MODIFIED: str | None = None
     ECHO_404 = False  # 模拟非合规服务器：404 propstat 里回显空请求属性
+    MKCOL_EXISTS_CODE = 405  # 网盘桥接（CloudDrive/Alist）对已存在路径回 400
+    MKCOL_SEEN: list[str] = []
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *a):
@@ -101,8 +103,9 @@ class MiniDAV(BaseHTTPRequestHandler):
         if not self._auth_ok():
             return self._deny()
         p = self._path().rstrip("/")
+        MiniDAV.MKCOL_SEEN.append(p)
         if p in self.DIRS:
-            return self._reply(405)
+            return self._reply(self.MKCOL_EXISTS_CODE)
         parent = p.rsplit("/", 1)[0] or "/"
         if parent != "/" and parent not in self.DIRS:
             return self._reply(409)  # RFC 4918 §9.3.1：祖先缺失，不自动建
@@ -164,6 +167,8 @@ class WebDAVCase(unittest.TestCase):
         MiniDAV.FILES, MiniDAV.DIRS = {}, {"/dav"}
         MiniDAV.REQUIRE, MiniDAV.LAST_MODIFIED = None, None
         MiniDAV.ECHO_404 = False
+        MiniDAV.MKCOL_EXISTS_CODE = 405
+        MiniDAV.MKCOL_SEEN = []
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), MiniDAV)
         self.srv.daemon_threads = True
         self.srv.block_on_close = False
@@ -252,6 +257,16 @@ class TestContract(WebDAVCase):
         with urllib.request.urlopen(req) as resp:
             body = resp.read().decode()
         self.assertEqual(body.count("<D:response>"), 4)  # 含全部后代
+
+    def test_nas_style_400_on_existing_mkcol(self):
+        # 真实 NAS（网盘桥接）回归：已存在挂载根的 MKCOL 回 400；
+        # 客户端必须先 PROPFIND 探测，不对已存在段发 MKCOL
+        MiniDAV.MKCOL_EXISTS_CODE = 400
+        b = self.backend()
+        b.put("g1", "sub/a.dat", io.BytesIO(b"x"), 1)
+        self.assertIn("/dav/g1/sub/a.dat", MiniDAV.FILES)
+        self.assertNotIn("/dav", MiniDAV.MKCOL_SEEN)
+        self.assertIn("/dav/g1", MiniDAV.MKCOL_SEEN)  # 缺失段照常创建
 
     def test_multilevel_subdirectory_base(self):
         # 配置到服务器多级子目录：不存在则自顶向下自动建链
@@ -398,7 +413,8 @@ class TestUnit(unittest.TestCase):
 
     def test_mkcol_tolerance_table(self):
         b = self.bk()
-        for code, ok in ((405, True), (409, True), (301, True), (500, False)):
+        for code, ok in ((405, True), (409, True), (301, True),
+                         (400, True), (501, True), (500, False)):
             with mock.patch.object(b, "_request",
                                    side_effect=http_err(code)):
                 if ok:
@@ -410,7 +426,8 @@ class TestUnit(unittest.TestCase):
     def test_ensure_collection_topdown_and_cached(self):
         b = self.bk()
         made = []
-        with mock.patch.object(b, "_mkcol", side_effect=made.append):
+        with mock.patch.object(b, "_exists", return_value=False), \
+                mock.patch.object(b, "_mkcol", side_effect=made.append):
             b._ensure_collection("http://h/dav/g1/sub/")
             self.assertEqual(made, ["http://h/dav/", "http://h/dav/g1/",
                                     "http://h/dav/g1/sub/"])  # 自顶向下
@@ -419,6 +436,15 @@ class TestUnit(unittest.TestCase):
             n = len(made)
             b._ensure_collection("http://h/dav/g1/sub/")  # 会话缓存命中
             self.assertEqual(len(made), n)
+
+    def test_ensure_collection_skips_existing(self):
+        # 协议要点：MKCOL 只发给 PROPFIND 确认 404 的段（§9.3 未映射 URL）
+        b = self.bk()
+        made = []
+        with mock.patch.object(b, "_exists", return_value=True), \
+                mock.patch.object(b, "_mkcol", side_effect=made.append):
+            b._ensure_collection("http://h/dav/g1/sub/")
+        self.assertEqual(made, [])
 
     def test_write_manifest_409_rebuilds_and_retries(self):
         from savesync.manifest import RemoteManifest
@@ -438,7 +464,8 @@ class TestUnit(unittest.TestCase):
         with mock.patch.object(b, "_request", side_effect=fake_request), \
                 mock.patch.object(b, "_mkcol"):
             b.write_manifest(m)
-        self.assertEqual(calls, ["PUT", "PUT"])  # 409 → 建链 → 重试
+        # 409 → 探测 base（存在则免 MKCOL）→ 重试 PUT
+        self.assertEqual(calls, ["PUT", "PROPFIND", "PUT"])
 
     def test_get_closes_response(self):
         b = self.bk()
