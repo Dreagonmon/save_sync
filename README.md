@@ -21,6 +21,7 @@ savesync games
 ## 状态
 
 - ✅ 核心状态机（两阶段 plan/execute、全局版本令牌冲突检测）+ 本地目录后端 + CLI
-  已实现，48 项 unittest 全绿
+  已实现，88 项 unittest 全绿（每模块专属测试文件）
   （`PYTHONPATH=src python3 -m unittest discover -s tests`）
-- ⏳ zip / webdav 后端为契约桩，按 DESIGN.md §8 推进中
+- ✅ zip 后端已实现（单包多游戏，提交时整包重写合并其余游戏，spool 缓冲不占内存）
+- ⏳ webdav 后端为契约桩，按 DESIGN.md §8 推进中

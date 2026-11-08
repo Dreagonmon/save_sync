@@ -232,9 +232,13 @@ class Backend(Protocol):
 
 ### 8.2 zip
 单包多游戏，布局与后端根一致（`<id>/…` + `<id>.json`）。zip 不可原地改，
-后端在内存/临时区**缓冲全部操作**，`write_manifest` 时整包重写：
-指定游戏取本次新备份，**其余游戏从旧包原样搬运条目**（合并语义），写 tmp 后
-`os.replace`。文件名 UTF-8（zipfile 默认），压缩 `ZIP_DEFLATED`。不做追加式增量。
+但**无 spool 缓冲**：`put` 把流直接写进新包（tmp，append 模式，每次写完即关，
+盘上始终是合法 zip，提交前 `get`/`list_files` 读 tmp 优先）；`delete` 记删除集。
+`write_manifest` 提交点：旧包中其余游戏条目、本游戏未动条目**搬运追加**进新包
+（跳过差集删除与已被 put 覆盖的条目），写入新清单，`os.replace` 原子替换。
+全程仅新包一个临时文件，峰值磁盘 = 旧包 + 新包；崩溃残留 tmp 在下次首次写入前
+清理。同名重复 put 以最后一次为准。文件名 UTF-8（zipfile 默认），压缩
+`ZIP_DEFLATED`。不做追加式增量（旧包条目搬运时解压→重压）。
 
 ### 8.3 webdav
 `urllib.request` 裸实现（零第三方依赖）：`PROPFIND Depth:1` 递归列举、`MKCOL` 建目录、
