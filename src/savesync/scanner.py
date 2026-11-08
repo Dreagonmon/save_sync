@@ -1,7 +1,9 @@
 """存档树扫描：ignore 规则 + 两级 hash（DESIGN.md §5/§6）。
 
 相对路径统一正斜杠；fnmatchcase 匹配（* 可跨 /，大小写敏感保证跨平台一致）；
-目录前缀命中即整树剪枝。符号链接跳过；空目录不保留（清单只记录文件）。
+目录前缀命中即整树剪枝。符号链接跟随（Proton/Lutris 的 prefix 内常用链接目录
+放存档），以 (st_dev, st_ino) 访问集防环防重，真实目录优先——同一目标按真实
+路径记录，恢复不物化链接结构；断链跳过。空目录不保留（清单只记录文件）。
 (size, mtime) 与状态清单一致时沿用旧 hash，否则重算 SHA-256。
 """
 from __future__ import annotations
@@ -51,32 +53,55 @@ def scan(
 ) -> list[ScannedFile]:
     """扫描存档树。known_hashes 命中 (size, mtime) 时跳过重算。
 
-    符号链接（文件与目录）跳过；超大文件警告一次（经 warn 回调，core 不 print）。
+    符号链接目录跟随（os.walk followlinks + (dev,ino) 访问集防环）；同一目录
+    可经真实路径与链接路径重复到达时只按真实路径扫描一次，避免重复备份与
+    恢复后把链接物化成真实目录（如 Proton 的 dosdevices/c:）。断链跳过。
+    超大文件警告一次（经 warn 回调，core 不 print）。
     """
     known_hashes = known_hashes or {}
     root = Path(root)
     out: list[ScannedFile] = []
-    for dirpath, dirnames, filenames in os.walk(root):
+    visited: set[tuple[int, int]] = set()
+    try:
+        rst = root.stat()
+        visited.add((rst.st_dev, rst.st_ino))
+    except OSError:
+        return out
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
         base = Path(dirpath)
-        kept = []
+        reals: list[str] = []
+        links: list[tuple[str, tuple[int, int]]] = []
         for d in sorted(dirnames):
             dp = base / d
-            if dp.is_symlink():
-                continue
             rel = dp.relative_to(root).as_posix()
             if _dir_ignored(rel, ignore):
                 continue
-            kept.append(d)
-        dirnames[:] = kept
+            try:
+                dst = dp.stat()
+            except OSError:
+                continue  # 断链 / 扫描期间消失
+            key = (dst.st_dev, dst.st_ino)
+            if dp.is_symlink():
+                links.append((d, key))
+            elif key not in visited:
+                visited.add(key)
+                reals.append(d)
+        for d, key in links:  # 真实目录先行，链接只补真实路径未覆盖的目标
+            rel = (base / d).relative_to(root).as_posix()
+            if key in visited:
+                if warn is not None:
+                    warn(f"跳过符号链接目录 {rel}（目标已扫描或成环）")
+                continue
+            visited.add(key)
+            reals.append(d)
+        dirnames[:] = reals
         for f in sorted(filenames):
             fp = base / f
-            if fp.is_symlink():
-                continue
             rel = fp.relative_to(root).as_posix()
             if is_ignored(rel, ignore):
                 continue
             try:
-                st = fp.stat()
+                st = fp.stat()  # 跟随符号链接文件；断链 OSError 跳过
             except OSError:
                 continue  # 扫描期间消失/不可读
             known = known_hashes.get(rel)
