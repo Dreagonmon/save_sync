@@ -1,7 +1,7 @@
 """CLI 薄适配层（DESIGN.md §9）。
 
-savesync backup [game ...] [--backend B] [--path N] [--dry-run]   # 缺省 = all
-savesync restore [game ...] [--backend B] [--path N]
+savesync backup [game ...] [-B B | --zip P | --dir P] [--path N] [--dry-run]
+savesync restore [game ...] [-B B | --zip P | --dir P] [--path N]
 savesync status [game ...]                             # 各游戏 L/R 版本与差异摘要
 savesync games
 
@@ -23,8 +23,8 @@ from .backends import create_backend
 from .config import BackendConfig, load_backends, load_games, require_backends
 from .errors import BackendError, ConfigError, NeedsInputError, SaveSyncError
 from .manifest import LocalState, load_local_state, save_local_state
-from .paths import (current_platform, exists_quietly, find_candidate,
-                    resolve_candidates)
+from .paths import (current_platform, exists_quietly, expand,
+                    find_candidate, resolve_candidates)
 from .prompt import (ask_decision, ask_password, is_interactive,
                      resolve_decisions)
 from .sync import (DECISION_PATH, Decision, SyncReport, execute_backup,
@@ -80,10 +80,28 @@ def _pick_backend(args, backends: dict[str, BackendConfig],
     return ids[ask_decision(d, interactive)]
 
 
+def _ad_hoc_backend(args) -> BackendConfig | None:
+    """--zip/--dir 的临时后端：id = 展开后的绝对路径。
+
+    与配置文件后端表现一致（同样的清单/版本线/同步点语义），只是无需
+    s-*.toml；每个路径在状态里是独立镜像，重复用同一路径即增量。
+    """
+    if getattr(args, "zip", None):
+        typ, raw = "zip", args.zip
+    elif getattr(args, "dir", None):
+        typ, raw = "dir", args.dir
+    else:
+        return None
+    p = Path(os.path.abspath(expand(raw)))
+    return BackendConfig(id=str(p), type=typ, path=p)
+
+
 def _run(cmd: str, args, root: Path, interactive: bool) -> int:
     cfg_dir = root / "config"
-    backends = load_backends(cfg_dir)
-    require_backends(backends)
+    ad_hoc = _ad_hoc_backend(args)
+    backends = {} if ad_hoc else load_backends(cfg_dir)
+    if not ad_hoc:
+        require_backends(backends)
     games = load_games(cfg_dir)
     selected, explicit = _select_games(args, games)
     if getattr(args, "path", None) is not None and len(selected) != 1:
@@ -94,8 +112,11 @@ def _run(cmd: str, args, root: Path, interactive: bool) -> int:
     for gid in selected:
         game = games[gid]
         local = load_local_state(data_dir, gid)
-        backend_id = _pick_backend(args, backends, local, interactive)
-        bcfg = backends[backend_id]
+        if ad_hoc:
+            backend_id, bcfg = ad_hoc.id, ad_hoc
+        else:
+            backend_id = _pick_backend(args, backends, local, interactive)
+            bcfg = backends[backend_id]
         backend = create_backend(bcfg, _password_provider(bcfg, interactive))
         state = local          # 版本线按游戏全局唯一，所有后端共享
         chosen = local.chosen_path if local else None
@@ -227,6 +248,7 @@ def main(argv: list[str] | None = None) -> int:
   savesync backup                    备份全部游戏
   savesync backup delta-v -B nas     备份单个游戏到指定后端
   savesync restore -B nas --path 1   从指定后端恢复，并指定存档路径编号
+  savesync backup delta-v --zip ./delta-v.zip   快速打包（--dir 同理，无需配置后端）
   savesync status                    逐后端对比本地/远端版本线
 
 后端选择（backup/restore，详见 savesync <命令> -h）:
@@ -242,8 +264,14 @@ def main(argv: list[str] | None = None) -> int:
         sp = sub.add_parser(cmd, help=hlp)
         sp.add_argument("games", nargs="*", metavar="GAME",
                         help="游戏 id，缺省为全部（隐式游戏找不到路径时跳过）")
-        sp.add_argument("-B", "--backend", metavar="ID",
-                        help="存储后端 id（缺省：唯一后端自动选，否则交互选择）")
+        grp = sp.add_mutually_exclusive_group()
+        grp.add_argument("-B", "--backend", metavar="ID",
+                         help="存储后端 id（缺省：唯一后端自动选，否则交互选择）")
+        grp.add_argument("--zip", metavar="PATH",
+                         help="临时以该 zip 文件为后端（快速打包；无需配置后端，"
+                              "不存在则创建，状态按该路径记录同步点）")
+        grp.add_argument("--dir", metavar="PATH",
+                         help="临时以该目录为后端（同 --zip，目标为文件夹）")
         sp.add_argument("--path", type=int, metavar="N",
                         help="指定存档路径编号（仅单游戏操作）")
         sp.add_argument("--dry-run", action="store_true", help="只打印差集计划")

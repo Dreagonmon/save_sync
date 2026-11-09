@@ -169,3 +169,56 @@ class TestCli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAdHocBackend(TestCli):
+    """--zip/--dir 临时后端：快速打包，无需配置文件后端。"""
+
+    def test_zip_pack_and_restore_without_config_backend(self):
+        (self.root / "config" / "s-local.toml").unlink()  # 无任何后端配置
+        self.w("a.sav", b"AAA")
+        zp = self.root / "out" / "pack.zip"  # 父目录不存在也自动建
+        rc, out = self.run_cli("backup", "test", "--zip", str(zp))
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(zp.exists())
+        rc, out = self.run_cli("backup", "test", "--zip", str(zp))
+        self.assertEqual(rc, 0)
+        self.assertIn("已是最新", out)  # 同一路径 = 同一镜像 → 增量
+        self.w("a.sav", b"CHANGED")
+        rc, out = self.run_cli("restore", "test", "--zip", str(zp))
+        self.assertEqual(rc, 3)  # 冲突确认语义与配置后端一致
+        self.assertIn("覆盖", out)
+        with mock.patch.object(cli, "is_interactive", lambda: True), \
+                mock.patch("builtins.input", lambda *a: "1"):
+            rc, out = self.run_cli("restore", "test", "--zip", str(zp))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((self.save / "a.sav").read_bytes(), b"AAA")
+
+    def test_dir_ad_hoc_backend(self):
+        (self.root / "config" / "s-local.toml").unlink()
+        self.w("a.sav", b"AAA")
+        dp = self.root / "out" / "mirror"
+        rc, out = self.run_cli("backup", "test", "--dir", str(dp))
+        self.assertEqual(rc, 0, out)
+        self.assertTrue((dp / "test" / "a.sav").exists())
+        self.assertTrue((dp / "test.json").exists())
+
+    def test_ad_hoc_conflicts_with_backend(self):
+        for argv in (("backup", "-B", "local", "--zip", "/tmp/x.zip"),
+                     ("backup", "--zip", "/tmp/x.zip", "--dir", "/tmp/y")):
+            with self.assertRaises(SystemExit) as cm:
+                self.run_cli(*argv)
+            self.assertEqual(cm.exception.code, 2)  # argparse 互斥 → 用法错误
+
+    def test_ad_hoc_state_keyed_by_path(self):
+        self.w("a.sav", b"AAA")
+        zp = self.root / "p1.zip"
+        rc, _ = self.run_cli("backup", "test", "--zip", str(zp))
+        self.assertEqual(rc, 0)
+        state = (self.root / "data" / "test.json").read_text(encoding="utf-8")
+        self.assertIn(str(zp), state)  # 同步点按路径记录
+        # 换路径 = 新镜像：版本线仍全局共享，新包从 L+1 起
+        zp2 = self.root / "p2.zip"
+        rc, out = self.run_cli("backup", "test", "--zip", str(zp2))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("版本 1 → 2", out)

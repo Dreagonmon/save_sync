@@ -256,14 +256,18 @@ class Backend(Protocol):
 ## 9. CLI
 
 ```
-savesync backup [game ...] [-B/--backend ID] [--path N] [--dry-run]  # 缺省 = all
-savesync restore [game ...] [-B/--backend ID] [--path N]
+savesync backup [game ...] [-B/--backend ID | --zip P | --dir P] [--path N] [--dry-run]
+savesync restore [game ...] [-B/--backend ID | --zip P | --dir P] [--path P]
 savesync status [game ...]          # 各游戏 × 各后端的 L/R 版本与路径状态
 savesync games                      # 列出配置的后端与游戏
 ```
 
 - 后端选择：`--backend` 指定 > 唯一后端自动选 > 交互选择（默认 = 上次使用的后端）；
   非交互且无默认 → 退出码 3，提示 `--backend <id>` 及可选值。
+- **临时后端 `--zip P` / `--dir P`**（与 `-B` 互斥）：以压缩包/文件夹为后端，
+  清单/版本线/冲突语义与配置后端完全一致，但无需 `s-*.toml`——用于快速打包
+  存档、拷给另一台机器恢复。路径经 `~`/`$VAR`/`%VAR%` 展开为绝对路径后作为
+  后端 id 记入状态（每个路径是独立镜像，重复用同一路径即增量）。
 
 - **CLI 是薄适配层**：`plan → resolve_decisions（交互询问）→ 重 plan → execute
   → 渲染 SyncReport`，本模块之外（core/backends）禁止 print 与 input。
