@@ -23,7 +23,7 @@ from typing import BinaryIO, Callable, Iterator
 from ..config import BackendConfig
 from ..errors import BackendError
 from ..manifest import RemoteManifest
-from .base import FileMeta
+from .base import Backend, FileMeta
 
 import base64
 
@@ -49,9 +49,10 @@ class _PreemptiveBasic(urllib.request.BaseHandler):
     https_request = http_request
 
 
-class WebDAVBackend:
+class WebDAVBackend(Backend):
     def __init__(self, cfg: BackendConfig,
                  password_provider: Callable[[], str] | None = None):
+        super().__init__(cfg)
         self.base_url = cfg.url.rstrip("/") if cfg.url else ""
         self.username = cfg.username
         self._password = cfg.password or os.environ.get(

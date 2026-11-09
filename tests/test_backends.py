@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from savesync.backends import create_backend
 from savesync.backends.dirfs import DirBackend
@@ -45,3 +46,39 @@ class TestFactory(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBackendABC(unittest.TestCase):
+    """抽象基类语义：名义继承、实例化强制实现、共享状态收纳。"""
+
+    def test_incomplete_subclass_rejected(self):
+        from savesync.backends.base import Backend
+
+        class Partial(Backend):
+            def read_manifest(self, game_id):
+                return None
+
+        with self.assertRaises(TypeError):
+            Partial()  # 未实现全部抽象方法 → 不可实例化
+
+    def test_cannot_instantiate_base(self):
+        from savesync.backends.base import Backend
+        with self.assertRaises(TypeError):
+            Backend.__new__(Backend)
+
+    def test_created_backends_carry_identity(self):
+        from savesync.backends import create_backend
+        from savesync.backends.base import Backend
+        with TemporaryDirectory() as td:
+            cases = [
+                BackendConfig(id="d", type="dir", path=Path(td) / "d"),
+                BackendConfig(id="z", type="zip", path=Path(td) / "z.zip"),
+                BackendConfig(id="w", type="webdav",
+                              url="http://h/dav"),
+            ]
+            for cfg in cases:
+                b = create_backend(cfg)
+                self.assertIsInstance(b, Backend)
+                self.assertIs(b.cfg, cfg)
+                self.assertEqual((b.id, b.type), (cfg.id, cfg.type))
+                self.assertIn(cfg.id, repr(b))

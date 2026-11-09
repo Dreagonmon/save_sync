@@ -13,13 +13,14 @@ from typing import BinaryIO, Iterator
 from ..config import BackendConfig
 from ..errors import BackendError
 from ..manifest import RemoteManifest
-from .base import FileMeta
+from .base import Backend, FileMeta
 
 _CHUNK = 1 << 20
 
 
-class DirBackend:
+class DirBackend(Backend):
     def __init__(self, cfg: BackendConfig):
+        super().__init__(cfg)
         self.root = Path(cfg.path)  # type: ignore[arg-type]
 
     # ---- 内部 ----
@@ -30,7 +31,7 @@ class DirBackend:
     def _manifest_path(self, game_id: str) -> Path:
         return self.root / f"{game_id}.json"
 
-    # ---- Backend 协议 ----
+    # ---- Backend 抽象方法 ----
 
     def read_manifest(self, game_id: str) -> RemoteManifest | None:
         try:

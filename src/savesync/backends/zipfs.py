@@ -23,13 +23,14 @@ from typing import BinaryIO, Iterator
 from ..config import BackendConfig
 from ..errors import BackendError
 from ..manifest import RemoteManifest
-from .base import FileMeta
+from .base import Backend, FileMeta
 
 _CHUNK = 1 << 20
 
 
-class ZipBackend:
+class ZipBackend(Backend):
     def __init__(self, cfg: BackendConfig):
+        super().__init__(cfg)
         self.zip_path = Path(cfg.path)  # type: ignore[arg-type]
         self.tmp_path = self.zip_path.with_name(
             self.zip_path.name + ".savesync-tmp")

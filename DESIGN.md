@@ -216,7 +216,7 @@ CLI 与未来 WebUI 都只是薄适配层：
 
 ## 8. 后端实现
 
-统一协议（`backends/base.py`）：
+统一抽象基类 `Backend(ABC)`（`backends/base.py`，名义继承，实例化强制实现全部抽象方法；基类收纳 `cfg`/`id`/`type` 共享状态）：
 
 ```python
 class Backend(Protocol):
@@ -300,13 +300,13 @@ src/savesync/
 ├── ntp.py          # SNTP 客户端（阿里云，2 次失败回退本地）
 ├── prompt.py       # CLI 侧 Decision 作答（交互/非交互），仅被 cli 使用
 └── backends/
-    ├── base.py     # Backend 协议
+    ├── base.py     # Backend 抽象基类（ABC）+ FileMeta
     ├── dirfs.py
     ├── zipfs.py
     └── webdav.py
 ```
 
-- 测试：dir 后端为参照实现，zip/webdav 后端对着同一套协议契约测试
+- 测试：dir 后端为参照实现，zip/webdav 后端对着同一套接口契约测试
   （webdav 用标准库 http.server 起假服务器）。
 
 ## 11. 已知取舍
