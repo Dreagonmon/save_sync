@@ -222,3 +222,21 @@ class TestAdHocBackend(TestCli):
         rc, out = self.run_cli("backup", "test", "--zip", str(zp2))
         self.assertEqual(rc, 0, out)
         self.assertIn("版本 1 → 2", out)
+
+    def test_restore_new_game_requires_path_choice(self):
+        # 回归：0 条路径存在的新游戏 restore 曾静默选第一条 linux 路径
+        self.w("a.sav", b"AAA")
+        self.run_cli("backup")  # 现有路径先上远端
+        (self.root / "config" / "g-test.toml").write_text(
+            'name = "测试游戏"\n[paths.linux]\n'
+            f'"{self.root / "no1"}" = "设备一"\n'
+            f'"{self.root / "no2"}" = "设备二"\n', encoding="utf-8")
+        (self.root / "data" / "test.json").unlink()  # 模拟全新游戏（无状态）
+        rc, out = self.run_cli("restore")
+        self.assertEqual(rc, 3)  # 非交互：不再静默选第一条
+        self.assertIn("--path", out)
+        with mock.patch.object(cli, "is_interactive", lambda: True), \
+                mock.patch("builtins.input", lambda *a: "2"):
+            rc, out = self.run_cli("restore")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((self.root / "no2" / "a.sav").read_bytes(), b"AAA")

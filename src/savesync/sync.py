@@ -108,6 +108,10 @@ def _resolve_save_root(game: GameConfig, platform: str,
         plan.save_root = existing[0].path
         plan.chosen_path = existing[0].index
         return True
+    if not existing and for_restore and len(cands) == 1:
+        plan.save_root = cands[0].path  # 唯一候选无歧义：直接创建
+        plan.chosen_path = cands[0].index
+        return True
     if len(existing) > 1:
         pool = existing
     elif for_restore and cands:
@@ -123,10 +127,11 @@ def _resolve_save_root(game: GameConfig, platform: str,
         return False
     default = None
     if chosen_path is not None:
+        # 状态记得上次选过 → 自动沿用（resolve_decisions 对默认项不询问）
         if chosen_path in [c.index for c in pool]:
             default = [c.index for c in pool].index(chosen_path)
-    elif for_restore and pool is cands:
-        default = 0
+    # 注意：0 条存在且从未选过时不给默认——静默挑第一条曾把新游戏
+    # 恢复到错误路径；交互必须询问，非交互退出码 3 提示 --path N
     plan.decisions.append(Decision(
         id=DECISION_PATH,
         question=("选择恢复目标路径（不存在的将自动创建）" if pool is cands

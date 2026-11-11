@@ -208,8 +208,10 @@ CLI 与未来 WebUI 都只是薄适配层：
 - **0 条**：
   - 备份：命令显式点名该游戏 → 报错；`all` 隐式包含 → 跳过并打印
     `skipped (no path found)`，不算失败。
-  - 恢复：列出该平台**全部**配置路径（含不存在的）供选择，选中不存在的路径则
-    创建目录后恢复；非交互必须 `--path N`。
+  - 恢复：仅 1 条配置路径时自动创建该目录；多条则列出该平台**全部**配置路径
+    （含不存在的）供选择，选中不存在的路径则创建目录后恢复。从未选过
+    （状态无 `chosen_path`）时**不给默认项**——交互必须询问，非交互必须
+    `--path N`（曾默认第一条，导致新游戏静默恢复到错误路径）。
 
 平台判定：`sys.platform`；Android（Termux，`ANDROID_ROOT` / 相关环境变量）
 归入 `linux`，配置与选择逻辑完全一致，无独立分支。
@@ -219,7 +221,7 @@ CLI 与未来 WebUI 都只是薄适配层：
 统一抽象基类 `Backend(ABC)`（`backends/base.py`，名义继承，实例化强制实现全部抽象方法；基类收纳 `cfg`/`id`/`type` 共享状态）：
 
 ```python
-class Backend(Protocol):
+class Backend(ABC):
     def read_manifest(self, game_id) -> RemoteManifest | None: ...
     def write_manifest(self, manifest) -> None: ...      # 提交点
     def list_files(self, game_id) -> dict[str, FileMeta]: ...

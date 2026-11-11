@@ -492,13 +492,12 @@ class TestSyncCycle(WebDAVCase):
             self.assertEqual(st.version, 1)
             self.assertEqual(b.read_manifest("g1").version, 1)
             # 换机器：新路径恢复
-            target = Path(self._td.name) / "other"  # 不存在 → 出路径决策
+            target = Path(self._td.name) / "other"  # 不存在 + 唯一候选 → 自动建
             g2 = GameConfig(id="g1", name="G", ignore=[],
                             paths={"linux": {str(target): "新"}})
             plan = S.plan_restore(g2, b, None, platform="linux")
-            plan2 = S.plan_restore(g2, b, None, platform="linux",
-                                   save_root=plan.path_options[0])
-            _, st2 = S.execute_restore(plan2, {}, g2, b, None,
+            self.assertEqual(plan.save_root, target)
+            _, st2 = S.execute_restore(plan, {}, g2, b, None,
                                        backend_id="wd")
             self.assertEqual((target / "a.dat").read_bytes(), b"v1")
             self.assertEqual(st2.version, 1)

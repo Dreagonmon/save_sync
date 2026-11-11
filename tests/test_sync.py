@@ -270,13 +270,31 @@ class TestRestore(SyncCase):
         plan = S.plan_restore(g2, self.b, None, platform="linux")
         d = plan.decisions[0]
         self.assertEqual(d.id, S.DECISION_PATH)
-        self.assertEqual(d.default, 0)  # 0 条存在 → 默认第一条
+        self.assertIsNone(d.default)  # 从未选过 → 必须询问，不默认第一条
         target = plan.path_options[1]
         plan2 = S.plan_restore(g2, self.b, None, platform="linux",
                                save_root=target)
         rep, st2 = S.execute_restore(plan2, {}, g2, self.b, None)
         self.assertEqual((target / "a.txt").read_bytes(), b"v1")
         self.assertEqual(st2.chosen_path, 2)
+
+    def test_restore_single_missing_candidate_autoselects(self):
+        g, st = self.backup_once()
+        p1 = self.save.parent / "only"
+        g2 = self.game({str(p1): "唯一新路径"})
+        plan = S.plan_restore(g2, self.b, None, platform="linux")
+        self.assertEqual(plan.decisions, [])  # 无歧义不询问
+        self.assertEqual(plan.save_root, p1)
+        rep, st2 = S.execute_restore(plan, {}, g2, self.b, None)
+        self.assertEqual((p1 / "a.txt").read_bytes(), b"v1")
+
+    def test_restore_chosen_path_still_defaults(self):
+        g, st = self.backup_once()
+        p1, p2 = self.save.parent / "r1", self.save.parent / "r2"
+        g2 = self.game({str(p1): "新设备1", str(p2): "新设备2"})
+        plan = S.plan_restore(g2, self.b, None, platform="linux",
+                              chosen_path=2)
+        self.assertEqual(plan.decisions[0].default, 1)  # 状态记得 → 自动沿用
 
     def test_restore_without_remote_mtime(self):
         """无 mtime 环境：清单缺 mtime 仍可恢复，状态记 0.0（不信任缓存）。"""

@@ -184,10 +184,8 @@ class TestZipSync(unittest.TestCase):
         g2 = GameConfig(id="g1", name="G", ignore=[],
                         paths={"linux": {str(target): "新机器"}})
         plan = S.plan_restore(g2, self.b, None, platform="linux")
-        self.assertEqual(len(plan.path_options), 1)  # 0 存在 → 列全部供选
-        plan2 = S.plan_restore(g2, self.b, None, platform="linux",
-                               save_root=plan.path_options[0])
-        rep, st2 = S.execute_restore(plan2, {}, g2, self.b, None,
+        self.assertEqual(plan.save_root, target)  # 唯一候选 → 自动选中创建
+        rep, st2 = S.execute_restore(plan, {}, g2, self.b, None,
                                      backend_id="z")
         self.assertEqual((target / "a.dat").read_bytes(), b"v1")
         self.assertEqual(st2.version, 1)
